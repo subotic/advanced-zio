@@ -219,8 +219,8 @@ object BasicDerived extends ZIOSpecDefault {
             latch   <- Promise.make[Nothing, Unit]
             promise <- Promise.make[Nothing, Unit]
             ref     <- Ref.make(false)
-            fiber <- acquireReleaseWith(latch.succeed(()) *> Live.live(ZIO.sleep(10.millis)))(_ => ref.set(true))(
-                      _ => promise.await
+            fiber <- acquireReleaseWith(latch.succeed(()) *> Live.live(ZIO.sleep(10.millis)))(_ => ref.set(true))(_ =>
+                      promise.await
                     ).forkDaemon
             _ <- latch.await
             _ <- fiber.interrupt
@@ -326,8 +326,8 @@ object Graduation extends ZIOSpecDefault {
             latch   <- Promise.make[Nothing, Unit]
             promise <- Promise.make[Nothing, Unit]
             ref     <- Ref.make(false)
-            fiber <- acquireReleaseWith(latch.succeed(()) *> Live.live(ZIO.sleep(10.millis)))(_ => ref.set(true))(
-                      _ => promise.await
+            fiber <- acquireReleaseWith(latch.succeed(()) *> Live.live(ZIO.sleep(10.millis)))(_ => ref.set(true))(_ =>
+                      promise.await
                     ).forkDaemon
             _ <- latch.await
             _ <- fiber.interrupt
