@@ -486,6 +486,13 @@ object CustomLayers extends ZIOSpecDefault {
         } @@ sequential
     }.provideCustomLayer(testUserRepo)
 }
+trait UserRepo
+object Example extends ZIOSpec[UserRepo] {
+  def spec: Spec[Environment with TestEnvironment with Scope,Any] = ???
+  
+  def bootstrap: ZLayer[Scope,Any,Environment] = ???
+}
+
 
 /**
  * GRADUATION PROJECT

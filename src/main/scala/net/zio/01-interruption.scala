@@ -269,7 +269,7 @@ object UninterruptibleMask extends ZIOSpecDefault {
        */
       test("overly interruptible") {
         def doWork[A](queue: Queue[A], worker: A => UIO[Any]) =
-          ZIO.uninterruptibleMask(restore => queue.take.flatMap(a => restore(worker(a))))
+          ZIO.uninterruptibleMask(restore => restore(queue.take).flatMap(a => restore(worker(a))))
 
         def worker(database: Ref[Chunk[Int]]): Int => UIO[Any] = {
           def fib(n: Int): UIO[Int] =
@@ -317,7 +317,12 @@ object Graduation extends ZIOSpecDefault {
        */
       test("ensuring") {
         def withFinalizer[R, E, A](zio: ZIO[R, E, A])(finalizer: UIO[Any]): ZIO[R, E, A] =
-          zio <* finalizer
+          ZIO.uninterruptibleMask { restore =>
+            restore(zio).foldCauseZIO(
+              cause => finalizer *> ZIO.refailCause(cause),
+              success => finalizer *> ZIO.succeed(success)
+            )
+          }
 
         for {
           latch   <- Promise.make[Nothing, Unit]
