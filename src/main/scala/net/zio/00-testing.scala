@@ -15,6 +15,7 @@ package advancedzio.testing
 import zio._
 import zio.test._
 import zio.test.TestAspect._
+import javax.xml.crypto.Data
 
 /**
  * SPECS
@@ -501,45 +502,47 @@ object CustomLayers extends ZIOSpecDefault {
  *    create a layer for the test email service and use it in a test.
  *
  */
-// object Graduation extends ZIOSpecDefault {
+object Graduation extends ZIOSpecDefault {
 
-//   // mySpec @@ dataProvider(List(1,2,3))
+  // mySpec @@ dataProvider(List(1,2,3))
 
-//   trait DataProvider[+A] {
-//     def get: UIO[A]
-//   }
+  trait DataProvider[+A] {
+    def get: UIO[A]
+  }
+  object DataProvider {
+    def get[A: Tag]: ZIO[DataProvider[A], Nothing, A] = ZIO.serviceWithZIO[DataProvider[A]](_.get)
 
-//   object DataProvider {
-//     def get[A: Tag]: ZIO[DataProvider[A], Nothing, A] = ZIO.serviceWithZIO[DataProvider[A]](_.get)
+    def none[A: Tag]: ZLayer[Any, Nothing, DataProvider[A]] = ZLayer.succeed(new DataProvider[A] {
+      def get: UIO[A] = ZIO.dieMessage("No data provider available")
+    })
+  }
 
-//   }
+  def dataProvider[A: Tag](as: A*) = 
+    new TestAspectAtLeastR[DataProvider[A]] {
+      def some[R <: DataProvider[A], E](spec: Spec[R, E])(implicit trace: Trace): Spec[R, E] =
+        as.map { (a: A) =>
+          spec.provideSomeLayer[R] {
+            ZLayer.succeed[DataProvider[A]] {
+              new DataProvider[A] {
+                def get: UIO[A] = ZIO.succeed(a)
+              }
+            }
+          }
+        }.reduceOption(_ + _).getOrElse(Spec.empty)
+    }
 
-//   def dataProvider[A: Tag](as: A*) =
-//     new TestAspectAtLeastR[DataProvider[A]] {
-//       def some[R <: DataProvider[A], E](spec: Spec[R, E])(implicit trace: Trace): Spec[R, E] =
-//         as.map { a =>
-//           spec.provideCustomLayer {
-//             ZLayer.succeed[DataProvider[A]] {
-//               new DataProvider[A] {
-//                 def get: UIO[A] = ZIO.succeed(a)
-//               }
-//             }
-//           }
-//         }.reduceOption(_ + _).getOrElse(Spec.empty)
-//     }
+  // def short[A: Tag](as: A*) =
+  //   new TestAspectAtLeastR[Any] {
+  //     def some[R <: Live, E](spec: Spec[R, E])(implicit trace: Trace): Spec[R, E] =
+  //       spec @@ TestAspect.timeout(500.millis)
+  //   }
 
-//   def short[A: Tag](as: A*) =
-//     new TestAspectAtLeastR[Any] {
-//       def some[R <: Live, E](spec: Spec[R, E])(implicit trace: Trace): Spec[R, E] =
-//         spec @@ TestAspect.timeout(500.millis)
-//     }
-
-//   def spec =
-//     suite("Graduation")(
-//       test("example") {
-//         for {
-//           data <- DataProvider.get[Int]
-//         } yield assertTrue(data > 0)
-//       } @@ dataProvider(List(1, 2, 3))
-//     ).provideCustomLayer(??? : ZLayer[Any, Nothing, DataProvider[A]]) @@ TestAspect.timed
-// }
+  def spec =
+    suite("Graduation")(
+      test("example") {
+        for {
+          data <- DataProvider.get[Int]
+        } yield assertTrue(data > 0)
+      } @@ dataProvider(List(1, 2, 3))
+    ).provideCustomLayer(DataProvider.none) @@ TestAspect.timed
+}
