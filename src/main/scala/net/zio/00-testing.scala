@@ -382,7 +382,7 @@ object IntegrationSystem extends ZIOSpecDefault {
    * Explore jvmOnly, windows, linux, ifEnv, and other test aspects that
    * are useful for running platform-specific or integration / system tests.
    */
-  def spec = suite("IntegrationSystem")()
+  def spec = suite("IntegrationSystem")() @@ TestAspect.ifEnv("CI_MODE")(mode => mode == "STAGING" || mode == "NIGHTLY")
 }
 
 /**
@@ -419,7 +419,8 @@ object CustomLayers extends ZIOSpecDefault {
      * Implement the following method of the user repo to operate on the
      * in-memory test data stored in the Ref.
      */
-    def getUserById(id: String): Task[Option[User]] = ???
+    def getUserById(id: String): Task[Option[User]] =
+      ref.get.map(_.get(id))
 
     /**
      * EXERCISE
@@ -427,7 +428,8 @@ object CustomLayers extends ZIOSpecDefault {
      * Implement the following method of the user repo to operate on the
      * in-memory test data stored in the Ref.
      */
-    def updateUser(user: User): Task[Unit] = ???
+    def updateUser(user: User): Task[Unit] =
+      ref.update(_.updated(user.id, user))
   }
 
   /**
@@ -435,7 +437,16 @@ object CustomLayers extends ZIOSpecDefault {
    *
    * Create a test user repo layer and populate it with some test data.
    */
-  lazy val testUserRepo: ULayer[UserRepo] = ???
+  lazy val testUserRepo: ULayer[UserRepo] =
+    ZLayer {
+      for {
+        ref <- Ref.make[Map[String, User]](
+                Map(
+                  "sherlock@holmes.com" -> User("sherlock@holmes.com", "Sherlock Holmes", 42)
+                )
+              )
+      } yield TestUserRepo(ref)
+    }
 
   def spec =
     suite("CustomLayers") {
@@ -451,11 +462,10 @@ object CustomLayers extends ZIOSpecDefault {
          * Finally, to make the test pass, you will have to create test
          * data matches your test expectations.
          */
-        // for {
-        //   user <- UserRepo.getUserById("sherlock@holmes.com").some
-        // } yield assertTrue(user.age == 42)
-        assertTrue(false)
-      } @@ ignore +
+        for {
+          user <- UserRepo.getUserById("sherlock@holmes.com").some
+        } yield assertTrue(user.age == 42)
+      } +
         /**
          * EXERCISE
          *
@@ -472,8 +482,8 @@ object CustomLayers extends ZIOSpecDefault {
             test("getting a user") {
               assertTrue(false)
             }
-        } @@ sequential @@ ignore
-    }
+        } @@ sequential
+    }.provideCustomLayer(testUserRepo)
 }
 
 /**
@@ -491,6 +501,45 @@ object CustomLayers extends ZIOSpecDefault {
  *    create a layer for the test email service and use it in a test.
  *
  */
-object Graduation extends ZIOSpecDefault {
-  def spec = suite("Graduation")()
-}
+// object Graduation extends ZIOSpecDefault {
+
+//   // mySpec @@ dataProvider(List(1,2,3))
+
+//   trait DataProvider[+A] {
+//     def get: UIO[A]
+//   }
+
+//   object DataProvider {
+//     def get[A: Tag]: ZIO[DataProvider[A], Nothing, A] = ZIO.serviceWithZIO[DataProvider[A]](_.get)
+
+//   }
+
+//   def dataProvider[A: Tag](as: A*) =
+//     new TestAspectAtLeastR[DataProvider[A]] {
+//       def some[R <: DataProvider[A], E](spec: Spec[R, E])(implicit trace: Trace): Spec[R, E] =
+//         as.map { a =>
+//           spec.provideCustomLayer {
+//             ZLayer.succeed[DataProvider[A]] {
+//               new DataProvider[A] {
+//                 def get: UIO[A] = ZIO.succeed(a)
+//               }
+//             }
+//           }
+//         }.reduceOption(_ + _).getOrElse(Spec.empty)
+//     }
+
+//   def short[A: Tag](as: A*) =
+//     new TestAspectAtLeastR[Any] {
+//       def some[R <: Live, E](spec: Spec[R, E])(implicit trace: Trace): Spec[R, E] =
+//         spec @@ TestAspect.timeout(500.millis)
+//     }
+
+//   def spec =
+//     suite("Graduation")(
+//       test("example") {
+//         for {
+//           data <- DataProvider.get[Int]
+//         } yield assertTrue(data > 0)
+//       } @@ dataProvider(List(1, 2, 3))
+//     ).provideCustomLayer(??? : ZLayer[Any, Nothing, DataProvider[A]]) @@ TestAspect.timed
+// }
