@@ -47,8 +47,11 @@ object QueueBasics extends ZIOSpecDefault {
        */
       test("offer/take") {
         for {
-          ref <- Ref.make(0)
-          v   <- ref.get
+          queue <- Queue.bounded[Int](10)
+          ref   <- Ref.make(0)
+          f1    <- queue.offer(12).fork
+          f2    <- queue.take.flatMap(v => ref.update(_ => v))
+          v     <- ref.get
         } yield assertTrue(v == 12)
       } @@ ignore +
         /**
@@ -59,12 +62,15 @@ object QueueBasics extends ZIOSpecDefault {
          */
         test("consumer") {
           for {
-            counter <- Ref.make(0)
-            queue   <- Queue.bounded[Int](100)
-            _       <- ZIO.foreach(1 to 100)(v => queue.offer(v)).forkDaemon
-            value   <- counter.get
+            counter  <- Ref.make(0)
+            queue    <- Queue.bounded[Int](10)
+            producer <- ZIO.foreach(1 to 100)(v => queue.offer(v)).forkDaemon
+            consumer <- queue.take.flatMap(v => counter.update(_ + v)).forever.fork
+            _        <- producer.await
+            _        <- consumer.await // FIXME: not completely safe
+            value    <- counter.get
           } yield assertTrue(value == 5050)
-        } @@ ignore +
+        } +
         /**
          * EXERCISE
          *
@@ -76,11 +82,11 @@ object QueueBasics extends ZIOSpecDefault {
           for {
             counter <- Ref.make(0)
             queue   <- Queue.bounded[Int](100)
-            _       <- ZIO.foreach(1 to 100)(v => queue.offer(v)).forkDaemon
+            _       <- ZIO.foreachPar(1 to 100)(v => queue.offer(v)).forkDaemon
             _       <- queue.take.flatMap(v => counter.update(_ + v)).repeatN(99)
             value   <- counter.get
           } yield assertTrue(value == 5050)
-        } @@ ignore +
+        } +
         /**
          * EXERCISE
          *
@@ -92,10 +98,10 @@ object QueueBasics extends ZIOSpecDefault {
             counter <- Ref.make(0)
             queue   <- Queue.bounded[Int](100)
             _       <- ZIO.foreachPar(1 to 100)(v => queue.offer(v)).forkDaemon
-            _       <- queue.take.flatMap(v => counter.update(_ + v)).repeatN(99)
+            _       <- ZIO.foreachPar(1 to 10)(_ => queue.take.flatMap(v => counter.update(_ + v))) // FIXME: does not work
             value   <- counter.get
           } yield assertTrue(value == 5050)
-        } @@ ignore +
+        } +
         /**
          * EXERCISE
          *
@@ -109,10 +115,10 @@ object QueueBasics extends ZIOSpecDefault {
             queue  <- Queue.bounded[Int](100)
             _      <- (latch.succeed(()) *> queue.offer(1).forever).ensuring(done.set(true)).fork
             _      <- latch.await
-            _      <- queue.takeN(100)
+            _      <- queue.takeN(100) *> queue.shutdown
             isDone <- done.get.repeatWhile(_ == false).timeout(10.millis).some
           } yield assertTrue(isDone)
-        } @@ ignore
+        } @@ withLiveClock @@ flaky
     }
 }
 
@@ -192,8 +198,8 @@ object StmBasics extends ZIOSpecDefault {
           for {
             counter <- Ref.make(0)
             permits <- makePermits(100)
-            _ <- ZIO.foreachPar(1 to 1000)(
-                  _ => Random.nextIntBetween(1, 2).flatMap(n => permits.acquire(n) *> permits.release(n))
+            _ <- ZIO.foreachPar(1 to 1000)(_ =>
+                  Random.nextIntBetween(1, 2).flatMap(n => permits.acquire(n) *> permits.release(n))
                 )
             latch   <- Promise.make[Nothing, Unit]
             fiber   <- (latch.succeed(()) *> permits.acquire(101) *> counter.set(1)).forkDaemon
@@ -232,12 +238,8 @@ object HubBasics extends ZIOSpecDefault {
           latch   <- TRef.make(100).commit
           scount  <- Ref.make[Int](0)
           _       <- (latch.get.retryUntil(_ <= 0).commit *> ZIO.foreach(1 to 100)(hub.publish(_))).forkDaemon
-          _ <- ZIO.foreachPar(1 to 100) { _ =>
-                ZIO.scoped(hub.subscribe.flatMap { queue =>
-                  latch.update(_ - 1).commit
-                })
-              }
-          value <- counter.get
+          _       <- ZIO.foreachPar(1 to 100)(_ => ZIO.scoped(hub.subscribe.flatMap(queue => latch.update(_ - 1).commit)))
+          value   <- counter.get
         } yield assertTrue(value == 505000)
       } @@ ignore
     }
