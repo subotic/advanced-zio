@@ -19,6 +19,7 @@ import zio.test.TestAspect._
 
 import scala.concurrent.ExecutionContext
 import java.util.concurrent.atomic.AtomicReference
+import java.io.IOException
 
 object RuntimeSpec extends ZIOSpecDefault {
   implicit def unsafe: Unsafe = null.asInstanceOf[zio.Unsafe]
@@ -79,7 +80,9 @@ object RuntimeSpec extends ZIOSpecDefault {
 
           val runtime = Runtime(ZEnvironment.empty, FiberRefs.empty, RuntimeFlags.default)
 
-          try runtime.unsafe.run(ZIO.succeed(throw fatalError))
+          try runtime.unsafe.run(ZIO.succeed(throw fatalError).provide {
+            Runtime.setReportFatal(captureFatal(_))
+          })
           catch { case _: Throwable => () }
 
           assertTrue(fatalRef.get.get == fatalError)
@@ -181,7 +184,9 @@ object RuntimeSpec extends ZIOSpecDefault {
           }
 
           Runtime.default.unsafe.run {
-            ZIO.succeed(throw ioException) // HERE
+            ZIO.succeed(throw ioException).provide {
+              Runtime.addFatal(classOf[IOException])
+            } // HERE
           }
 
           assertTrue(fatalRef.get.get == ioException)
@@ -230,7 +235,10 @@ object RuntimeSpec extends ZIOSpecDefault {
         }
 
         try Runtime.default.unsafe.run {
-          effect // HERE
+          effect.provide {
+            Runtime.addSupervisor(supervisor) ++
+            Runtime.enableOpSupervision
+          } // HERE
         } catch { case _: Throwable => () }
 
         assertTrue(succeeded.get)

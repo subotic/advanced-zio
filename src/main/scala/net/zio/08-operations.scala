@@ -30,13 +30,16 @@ object AsyncTraces extends ZIOSpecDefault {
             _ <- ZIO.fail("Uh oh!")
           } yield ()
 
-        def traces(cause: Cause[String]): List[StackTrace] = ???
+        def traces(cause: Cause[String]): List[StackTrace] = {
+          println(cause.traces)
+          cause.traces
+        }
 
         Live.live(for {
           cause <- async.sandbox.flip
           ts    = traces(cause)
         } yield assertTrue(ts(0).stackTrace.length > 0))
-      } @@ ignore
+      }
     }
 }
 
@@ -61,18 +64,51 @@ object FiberDumps extends ZIOSpecDefault {
           supervisor <- Supervisor.track(false)
           _          <- example.supervised(supervisor)
           children   <- supervisor.value
-          _          <- ZIO.foreach(children)(child => ZIO.unit)
+          _ <- ZIO.foreach(children)(child =>
+                child.dump.flatMap(dump => dump.prettyPrint.flatMap(Console.printLine(_)))
+              )
         } yield assertTrue(children.length == 2)
       } @@ flaky
     }
 }
 
-object Logging extends ZIOSpecDefault {
-  def spec =
-    suite("Logging")()
+object Logging extends ZIOAppDefault {
+
+  def run =
+    ZIO.logLevel(LogLevel.Error) {
+      ZIO.logAnnotate("userid1", "blabla") {
+        ZIO.log("hello world!") @@ ZIOAspect.annotated("userid", "sherlockholmes") *>
+          ZIO.logInfo("hi")
+      }
+    } *>
+      ZIO.log("bla") @@
+        ZIOAspect.annotated("dfsf", "fsfds") @@
+        LogLevel.Error
+  *>
+  ZIO
+
 }
 
-object Metrics extends ZIOSpecDefault {
-  def spec =
-    suite("Metrics")()
+object Metrics extends ZIOAppDefault {
+
+  // Counte, Gauge, Histogram, Summary, Frequency
+
+  import zio.metrics._
+
+  val totalRequests =
+    Metric.counter("total_requests").tagged("route", "billing").tagged("api_version", "v1")
+
+  val concurrentRequests =
+    Metric.gauge("concurrent_requests").tagged("route", "billing").tagged("api_version", "vq")
+
+  def handleRoute: Task[Unit] = Console.printLine("Handling route")
+
+  def run =
+    for {
+      _ <- handleRoute @@ totalRequests.trackAll(1)
+      _ <- ZIO.acquireReleaseWith(concurrentRequests.update(+1))(_ => concurrentRequests.update(-1))(_ => handleRoute)
+      v <- totalRequests.value
+      _ <- Console.printLine(s"Total requests: $v")
+    } yield ()
+
 }
