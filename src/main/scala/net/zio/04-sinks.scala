@@ -96,9 +96,9 @@ object Operators extends ZIOSpecDefault {
         val stream = ZStream(1, 2, 3, 4)
 
         for {
-          value <- stream.runCount
+          value <- stream.run(sink)
         } yield assertTrue(value == 4)
-      } @@ ignore +
+      } +
         /**
          * EXERCISE
          *
@@ -107,14 +107,14 @@ object Operators extends ZIOSpecDefault {
          */
         test("zipPar") {
           def zippedSink: ZSink[Any, Nothing, Int, Nothing, (Long, Int)] =
-            ???
+            ZSink.count.zipPar(ZSink.sum[Int])
 
           val stream = ZStream(1, 2, 3, 4)
 
           for {
             value <- stream.run(zippedSink)
           } yield assertTrue(value == (4L, 10))
-        } @@ ignore +
+        } +
         /**
          * EXERCISE
          *
@@ -123,14 +123,14 @@ object Operators extends ZIOSpecDefault {
          */
         test("zip") {
           def zippedSink: ZSink[Any, Nothing, Int, Int, (Chunk[Int], Chunk[Int])] =
-            ???
+            ZSink.take(3).zip(ZSink.collectAll[Int])
 
           val stream = ZStream(1, 2, 3, 4)
 
           for {
             value <- stream.run(zippedSink)
           } yield assertTrue(value == (Chunk(1, 2, 3), Chunk(4)))
-        } @@ ignore +
+        } +
         /**
          * EXERCISE
          *
@@ -140,8 +140,8 @@ object Operators extends ZIOSpecDefault {
         test("flatMap") {
           val sink =
             for {
-              two       <- ZSink.collectAll[Int]
-              three     <- ZSink.collectAll[Int]
+              two       <- ZSink.take[Int](2)
+              three     <- ZSink.take[Int](3)
               remainder <- ZSink.collectAll[Int]
             } yield (two, three, remainder)
 
@@ -150,7 +150,7 @@ object Operators extends ZIOSpecDefault {
           for {
             chunks <- stream.run(sink)
           } yield assertTrue(chunks == (Chunk(1, 2), Chunk(3, 4, 5), Chunk(6)))
-        } @@ ignore
+        }
     }
 }
 
@@ -172,7 +172,14 @@ object Graduation extends ZIOSpecDefault {
   }
 
   def persistentQueue[A](topic: String): ZSink[PersistentQueueFactory, Throwable, A, Nothing, Unit] =
-    ???
+    for {
+      queueFactory <- ZSink.service[PersistentQueueFactory]
+      queue        <- ZSink.fromZIO(queueFactory.create(topic))
+      _ <- ZSink
+            .foreach(queue.append(_))
+            .channel
+            .ensuring(queue.shutdown.orDie).toSink[A, Nothing] // this works on the stream that the sink will operate on
+    } yield ()
 
   def spec =
     suite("Graduation") {

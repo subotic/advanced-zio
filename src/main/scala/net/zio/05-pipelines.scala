@@ -12,6 +12,7 @@ import zio.stream._
 import zio.test._
 import zio.test.TestAspect._
 import java.nio.charset.StandardCharsets
+import java.nio.charset.CharacterCodingException
 
 object Introduction extends ZIOSpecDefault {
   def spec =
@@ -28,9 +29,9 @@ object Introduction extends ZIOSpecDefault {
         val trans  = ZPipeline.take[Int](5)
 
         for {
-          chunks <- stream.runCollect
+          chunks <- (stream >>> trans).runCollect
         } yield assertTrue(chunks.length == 5)
-      } @@ ignore +
+      } +
         /**
          * EXERCISE
          *
@@ -42,9 +43,9 @@ object Introduction extends ZIOSpecDefault {
           val trans  = ZPipeline.take[Int](10)
 
           for {
-            values <- stream.runCollect
+            values <- (stream >>> trans).runCollect
           } yield assertTrue(values.length == 10)
-        } @@ ignore
+        }
     }
 }
 
@@ -59,12 +60,12 @@ object Constructors extends ZIOSpecDefault {
        * they are split on newlines.
        */
       test("splitLines") {
-        val stream = ZStream("a\nb\nc\n", "d\ne")
+        val stream = ZStream("x", "y", "z", "a\nb\nc\n", "d\ne")
 
         for {
-          values <- (stream).runCollect
-        } yield assertTrue(values == Chunk("a", "b", "c", "d", "e"))
-      } @@ ignore +
+          values <- (stream >>> ZPipeline.splitLines).runCollect
+        } yield assertTrue(values == Chunk("xyza", "b", "c", "d", "e"))
+      } +
         /**
          * EXERCISE
          *
@@ -75,9 +76,9 @@ object Constructors extends ZIOSpecDefault {
           val stream = ZStream("name,age,add", "ress,dob,gender")
 
           for {
-            values <- (stream).runCollect
+            values <- (stream >>> ZPipeline.splitOn(",")).runCollect
           } yield assertTrue(values == Chunk("name", "age", "address", "dob", "gender"))
-        } @@ ignore +
+        } +
         /**
          * EXERCISE
          *
@@ -91,28 +92,28 @@ object Constructors extends ZIOSpecDefault {
           val stream = ZStream.fromChunks(Chunk.fromArray(bytes1), Chunk.fromArray(bytes2))
 
           def decodedStream: ZStream[Any, Nothing, String] =
-            stream >>> ???
+            stream >>> ZPipeline.utf8Decode.orDie
 
           for {
             values <- decodedStream.runCollect
           } yield assertTrue(values == Chunk("Hello", "World!"))
-        } @@ ignore +
+        } +
         /**
          * EXERCISE
          *
-         * Using `ZPipeline.fromFunction`, create a pipeline that converts
+         * Using `ZPipeline.map`, create a pipeline that converts
          * strings to ints.
          */
-        test("fromFunction") {
+        test("map") {
           def parseInt: ZPipeline[Any, Nothing, String, Int] =
-            ???
+            ZPipeline.map[String, Int](_.toInt)
 
           val stream = ZStream("1", "2", "3")
 
           for {
             values <- (stream >>> parseInt).runCollect
           } yield assertTrue(values == Chunk(1, 2, 3))
-        } @@ ignore
+        }
     }
 }
 
@@ -127,16 +128,10 @@ object Operators extends ZIOSpecDefault {
        * this composition doesn't change the string stream.
        */
       test(">>>") {
-        import ZPipeline.utf8Decode
+        import ZPipeline.{ utf8Decode, utf8Encode }
 
-        def utf8Encode: ZPipeline[Any, Nothing, String, Byte] =
-          ZPipeline
-            .collect[String, Chunk[Byte]] {
-              case string =>
-                Chunk.fromArray(string.getBytes(StandardCharsets.UTF_8))
-            } >>> ZPipeline.mapChunks(_.flatten)
-
-        def composed = utf8Encode >>> utf8Decode
+        def composed: ZPipeline[Any, CharacterCodingException, String, String] =
+          utf8Encode >>> utf8Decode
 
         val chunk = Chunk("All", "Work", "And", "No", "Play", "Makes", "Jack", "A", "Dull", "Boy")
 
@@ -145,7 +140,7 @@ object Operators extends ZIOSpecDefault {
         for {
           values <- (stream >>> composed).runCollect
         } yield assertTrue(values == chunk)
-      } @@ ignore
+      }
     }
 }
 
