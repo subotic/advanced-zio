@@ -47,8 +47,11 @@ object QueueBasics extends ZIOSpecDefault {
        */
       test("offer/take") {
         for {
-          ref <- Ref.make(0)
-          v   <- ref.get
+          queue <- Queue.bounded[Int](10)
+          ref   <- Ref.make(0)
+          f1    <- queue.offer(12).fork
+          f2    <- queue.take.flatMap(v => ref.update(_ => v))
+          v     <- ref.get
         } yield assertTrue(v == 12)
       } @@ ignore +
         /**
@@ -59,12 +62,15 @@ object QueueBasics extends ZIOSpecDefault {
          */
         test("consumer") {
           for {
-            counter <- Ref.make(0)
-            queue   <- Queue.bounded[Int](100)
-            _       <- ZIO.foreach(1 to 100)(v => queue.offer(v)).forkDaemon
-            value   <- counter.get
+            counter  <- Ref.make(0)
+            queue    <- Queue.bounded[Int](10)
+            producer <- ZIO.foreach(1 to 100)(v => queue.offer(v)).forkDaemon
+            consumer <- queue.take.flatMap(v => counter.update(_ + v)).forever.fork
+            _        <- producer.await
+            _        <- consumer.await // FIXME: not completely safe
+            value    <- counter.get
           } yield assertTrue(value == 5050)
-        } @@ ignore +
+        } +
         /**
          * EXERCISE
          *
@@ -76,11 +82,11 @@ object QueueBasics extends ZIOSpecDefault {
           for {
             counter <- Ref.make(0)
             queue   <- Queue.bounded[Int](100)
-            _       <- ZIO.foreach(1 to 100)(v => queue.offer(v)).forkDaemon
+            _       <- ZIO.foreachPar(1 to 100)(v => queue.offer(v)).forkDaemon
             _       <- queue.take.flatMap(v => counter.update(_ + v)).repeatN(99)
             value   <- counter.get
           } yield assertTrue(value == 5050)
-        } @@ ignore +
+        } +
         /**
          * EXERCISE
          *
@@ -92,10 +98,10 @@ object QueueBasics extends ZIOSpecDefault {
             counter <- Ref.make(0)
             queue   <- Queue.bounded[Int](100)
             _       <- ZIO.foreachPar(1 to 100)(v => queue.offer(v)).forkDaemon
-            _       <- queue.take.flatMap(v => counter.update(_ + v)).repeatN(99)
+            _       <- ZIO.foreachPar(1 to 10)(_ => queue.take.flatMap(v => counter.update(_ + v))) // FIXME: does not work
             value   <- counter.get
           } yield assertTrue(value == 5050)
-        } @@ ignore +
+        } +
         /**
          * EXERCISE
          *
@@ -109,10 +115,10 @@ object QueueBasics extends ZIOSpecDefault {
             queue  <- Queue.bounded[Int](100)
             _      <- (latch.succeed(()) *> queue.offer(1).forever).ensuring(done.set(true)).fork
             _      <- latch.await
-            _      <- queue.takeN(100)
+            _      <- queue.takeN(100) *> queue.shutdown
             isDone <- done.get.repeatWhile(_ == false).timeout(10.millis).some
           } yield assertTrue(isDone)
-        } @@ ignore
+        } @@ withLiveClock @@ flaky
     }
 }
 
@@ -133,8 +139,8 @@ object StmBasics extends ZIOSpecDefault {
          * Implement a simple concurrent latch.
          */
         final case class Latch(ref: TRef[Boolean]) {
-          def await: UIO[Any]   = ZIO.unit
-          def trigger: UIO[Any] = ZIO.unit
+          def await: UIO[Any]   = ref.get.retryUntil(_ == true).commit
+          def trigger: UIO[Any] = ref.set(true).commit
         }
 
         def makeLatch: UIO[Latch] = TRef.make(false).map(Latch(_)).commit
@@ -148,7 +154,7 @@ object StmBasics extends ZIOSpecDefault {
           _      <- Live.live(Clock.sleep(10.millis))
           second <- waiter.poll
         } yield assertTrue(first.isEmpty && second.isDefined)
-      } @@ ignore +
+      } +
         test("countdown latch") {
 
           /**
@@ -157,8 +163,8 @@ object StmBasics extends ZIOSpecDefault {
            * Implement a simple concurrent latch.
            */
           final case class CountdownLatch(ref: TRef[Int]) {
-            def await: UIO[Any]     = ZIO.unit
-            def countdown: UIO[Any] = ZIO.unit
+            def await: UIO[Any]     = ref.get.retryUntil(_ <= 0).commit
+            def countdown: UIO[Any] = ref.update(_ - 1).commit
           }
 
           def makeLatch(n: Int): UIO[CountdownLatch] = TRef.make(n).map(ref => CountdownLatch(ref)).commit
@@ -173,8 +179,8 @@ object StmBasics extends ZIOSpecDefault {
             _      <- Live.live(Clock.sleep(10.millis))
             second <- waiter.poll
           } yield assertTrue(first.isEmpty && second.isDefined)
-        } @@ ignore +
-        test("permits") {
+        } +
+        test("permits / semaphores") {
 
           /**
            * EXERCISE
@@ -182,9 +188,12 @@ object StmBasics extends ZIOSpecDefault {
            * Implement `acquire` and `release` in a fashion the test passes.
            */
           final case class Permits(ref: TRef[Int]) {
-            def acquire(howMany: Int): UIO[Unit] = ???
+            def acquire(howMany: Int): UIO[Unit] =
+              ref.get.collectSTM {
+                case current if current >= howMany => ref.set(current - howMany)
+              }.commit
 
-            def release(howMany: Int): UIO[Unit] = ???
+            def release(howMany: Int): UIO[Unit] = ref.update(_ - howMany).commit
           }
 
           def makePermits(max: Int): UIO[Permits] = TRef.make(max).map(Permits(_)).commit
@@ -192,8 +201,8 @@ object StmBasics extends ZIOSpecDefault {
           for {
             counter <- Ref.make(0)
             permits <- makePermits(100)
-            _ <- ZIO.foreachPar(1 to 1000)(
-                  _ => Random.nextIntBetween(1, 2).flatMap(n => permits.acquire(n) *> permits.release(n))
+            _ <- ZIO.foreachPar(1 to 1000)(_ =>
+                  Random.nextIntBetween(1, 2).flatMap(n => permits.acquire(n) *> permits.release(n))
                 )
             latch   <- Promise.make[Nothing, Unit]
             fiber   <- (latch.succeed(()) *> permits.acquire(101) *> counter.set(1)).forkDaemon
@@ -203,7 +212,7 @@ object StmBasics extends ZIOSpecDefault {
             count   <- counter.get
             permits <- permits.ref.get.commit
           } yield assertTrue(count == 0 && permits == 100)
-        } @@ ignore
+        }
     }
 }
 
@@ -234,12 +243,13 @@ object HubBasics extends ZIOSpecDefault {
           _       <- (latch.get.retryUntil(_ <= 0).commit *> ZIO.foreach(1 to 100)(hub.publish(_))).forkDaemon
           _ <- ZIO.foreachPar(1 to 100) { _ =>
                 ZIO.scoped(hub.subscribe.flatMap { queue =>
-                  latch.update(_ - 1).commit
+                  latch.update(_ - 1).commit *>
+                    queue.take.flatMap(v => counter.update(_ + v)).repeatN(99)
                 })
               }
           value <- counter.get
         } yield assertTrue(value == 505000)
-      } @@ ignore
+      }
     }
 }
 
@@ -256,6 +266,42 @@ object HubBasics extends ZIOSpecDefault {
  *    which (gradually?) resets after a certain amount of time.
  */
 object Graduation extends ZIOSpecDefault {
+
+  trait Bulkhead[+E] {
+    def apply[R, E1 >: E, A](zio: ZIO[R, E1, A]): ZIO[R, E1, A]
+  }
+  object Bulkhead {
+    final case class ClosedException(capacity: Int) extends Exception(s"The bulkhead is closed at capacity ${capacity}")
+
+    final case class Impl[E](closedError: E, maxConcurrent: Int, current: TRef[Int]) extends Bulkhead[E] {
+      def apply[R, E1 >: E, A](zio: ZIO[R, E1, A]): ZIO[R, E1, A] =
+        ZIO.uninterruptibleMask { restore =>
+          (for {
+            n <- current.get
+            e <- if (n > maxConcurrent) STM.succeed(ZIO.fail(closedError))
+                else current.update(_ + 1) *> STM.succeed(restore(zio).ensuring(current.update(_ - 1).commit))
+          } yield e).commit.flatten
+        }
+
+    }
+
+    def make[E](closedError: E, maxConcurrent: Int): ZIO[Any, Nothing, Bulkhead[E]] =
+      for {
+        ref <- TRef.make(0).commit
+      } yield Impl(closedError, maxConcurrent, ref)
+  }
+
+  def exampleUsage = {
+    trait Request
+    trait Response
+
+    def execRequest(request: Request): Task[Response] = ???
+
+    class Server(bulkhead: Bulkhead[Bulkhead.ClosedException]) {
+      def execute: Task[Res]
+    }
+  }
+
   def spec =
     suite("Graduation")()
 }

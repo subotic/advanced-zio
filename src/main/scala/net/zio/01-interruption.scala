@@ -22,6 +22,7 @@ import zio._
 import zio.test._
 import zio.test.TestAspect._
 import scala.annotation.tailrec
+import java.io.IOException
 
 /**
  * GUARANTEES
@@ -33,6 +34,14 @@ import scala.annotation.tailrec
  * some region of code.
  */
 object InterruptGuarantees extends ZIOSpecDefault {
+
+  val example: ZIO[Any, IOException, Unit] = for {
+    _       <- Console.printLine("Hello")
+    result  <- ZIO.succeed(2 * 2)
+    result2 <- ZIO.succeed(result / 4)
+    line    <- Console.readLine("please add input")
+  } yield ()
+
   def spec = suite("InterruptGuarantees") {
     test("ensuring") {
 
@@ -49,8 +58,8 @@ object InterruptGuarantees extends ZIOSpecDefault {
         _       <- latch.await // await until fiber starts before interrupting
         _       <- fiber.interrupt
         v       <- ref.get
-      } yield assertTrue(v == 0)
-    } @@ ignore +
+      } yield assertTrue(v == 1)
+    } +
       test("onExit") {
 
         /**
@@ -66,8 +75,8 @@ object InterruptGuarantees extends ZIOSpecDefault {
           _       <- latch.await // await until fiber starts before interrupting
           _       <- fiber.interrupt
           exit    <- promise.await
-        } yield assertTrue(false)
-      } @@ ignore +
+        } yield assertTrue(exit.isInterrupted)
+      } +
       test("acquireRelease") {
         import java.net.Socket
 
@@ -85,7 +94,7 @@ object InterruptGuarantees extends ZIOSpecDefault {
           latch <- Promise.make[Nothing, Unit]
           fiber <- ZIO.acquireReleaseWith(latch.succeed(()) *> acquireSocket)(releaseSocket(_))(useSocket(_)).forkDaemon
           value <- latch.await *> Live.live(fiber.join.disconnect.timeout(1.second))
-        } yield assertTrue(value == Some(42))
+        } yield assertTrue(value == None)
       }
   }
 }
@@ -103,11 +112,13 @@ object InterruptibilityRegions extends ZIOSpecDefault {
       for {
         ref   <- Ref.make(0)
         latch <- Promise.make[Nothing, Unit]
-        fiber <- (latch.succeed(()) *> Live.live(ZIO.sleep(10.millis)) *> ref.update(_ + 1)).forkDaemon
+        fiber <- ZIO
+                  .uninterruptible((latch.succeed(()) *> Live.live(ZIO.sleep(10.millis)) *> ref.update(_ + 1)))
+                  .forkDaemon
         _     <- latch.await *> fiber.interrupt
         value <- ref.get
       } yield assertTrue(value == 1)
-    } @@ ignore +
+    } +
       test("interruptible") {
 
         /**
@@ -120,11 +131,14 @@ object InterruptibilityRegions extends ZIOSpecDefault {
 
           ref   <- Ref.make(0)
           latch <- Promise.make[Nothing, Unit]
-          fiber <- ZIO.uninterruptible(latch.succeed(()) *> ZIO.never).ensuring(ref.update(_ + 1)).forkDaemon
+          fiber <- ZIO
+                    .uninterruptible(latch.succeed(()) *> ZIO.interruptible(ZIO.never))
+                    .ensuring(ref.update(_ + 1))
+                    .forkDaemon
           _     <- Live.live(latch.await *> fiber.interrupt.disconnect.timeout(1.second))
           value <- ref.get
         } yield assertTrue(value == 1)
-      } @@ ignore
+      }
   }
 }
 
@@ -155,8 +169,8 @@ object Backpressuring extends ZIOSpecDefault {
           _     <- left.zipPar(right).ignore
           end   <- Clock.instant
           delta = end.getEpochSecond() - start.getEpochSecond()
-        } yield assertTrue(delta < 1))
-      } @@ ignore +
+        } yield assertTrue(delta >= 1))
+      } +
         /**
          * EXERCISE
          *
@@ -191,7 +205,12 @@ object BasicDerived extends ZIOSpecDefault {
        */
       test("ensuring") {
         def withFinalizer[R, E, A](zio: ZIO[R, E, A])(finalizer: UIO[Any]): ZIO[R, E, A] =
-          zio <* finalizer
+          ZIO.uninterruptibleMask { restore =>
+            restore(zio).foldCauseZIO(
+              cause => finalizer *> ZIO.refailCause(cause),
+              success => finalizer *> ZIO.succeed(success)
+            )
+          }
 
         for {
           latch   <- Promise.make[Nothing, Unit]
@@ -213,14 +232,16 @@ object BasicDerived extends ZIOSpecDefault {
           def acquireReleaseWith[R, E, A, B](
             acquire: ZIO[R, E, A]
           )(release: A => UIO[Any])(use: A => ZIO[R, E, B]): ZIO[R, E, B] =
-            acquire.flatMap(a => use(a) <* release(a))
+            ZIO.uninterruptibleMask { restore =>
+              acquire.flatMap(a => restore(use(a)).catchAllCause(cause => release(a) *> ZIO.refailCause(cause)))
+            }
 
           for {
             latch   <- Promise.make[Nothing, Unit]
             promise <- Promise.make[Nothing, Unit]
             ref     <- Ref.make(false)
-            fiber <- acquireReleaseWith(latch.succeed(()) *> Live.live(ZIO.sleep(10.millis)))(_ => ref.set(true))(
-                      _ => promise.await
+            fiber <- acquireReleaseWith(latch.succeed(()) *> Live.live(ZIO.sleep(10.millis)))(_ => ref.set(true))(_ =>
+                      promise.await
                     ).forkDaemon
             _ <- latch.await
             _ <- fiber.interrupt
@@ -248,9 +269,7 @@ object UninterruptibleMask extends ZIOSpecDefault {
        */
       test("overly interruptible") {
         def doWork[A](queue: Queue[A], worker: A => UIO[Any]) =
-          ZIO.uninterruptible {
-            queue.take.flatMap(a => ZIO.interruptible(worker(a)))
-          }
+          ZIO.uninterruptibleMask(restore => restore(queue.take).flatMap(a => restore(worker(a))))
 
         def worker(database: Ref[Chunk[Int]]): Int => UIO[Any] = {
           def fib(n: Int): UIO[Int] =
@@ -270,7 +289,7 @@ object UninterruptibleMask extends ZIOSpecDefault {
           _        <- fiber.interrupt
           data     <- database.get
         } yield assertTrue(data.length == 5)
-      } @@ ignore
+      }
     }
 }
 
@@ -298,7 +317,12 @@ object Graduation extends ZIOSpecDefault {
        */
       test("ensuring") {
         def withFinalizer[R, E, A](zio: ZIO[R, E, A])(finalizer: UIO[Any]): ZIO[R, E, A] =
-          zio <* finalizer
+          ZIO.uninterruptibleMask { restore =>
+            restore(zio).foldCauseZIO(
+              cause => finalizer *> ZIO.refailCause(cause),
+              success => finalizer *> ZIO.succeed(success)
+            )
+          }
 
         for {
           latch   <- Promise.make[Nothing, Unit]
@@ -326,8 +350,8 @@ object Graduation extends ZIOSpecDefault {
             latch   <- Promise.make[Nothing, Unit]
             promise <- Promise.make[Nothing, Unit]
             ref     <- Ref.make(false)
-            fiber <- acquireReleaseWith(latch.succeed(()) *> Live.live(ZIO.sleep(10.millis)))(_ => ref.set(true))(
-                      _ => promise.await
+            fiber <- acquireReleaseWith(latch.succeed(()) *> Live.live(ZIO.sleep(10.millis)))(_ => ref.set(true))(_ =>
+                      promise.await
                     ).forkDaemon
             _ <- latch.await
             _ <- fiber.interrupt
